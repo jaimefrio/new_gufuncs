@@ -527,17 +527,24 @@ GUFUNC_DESCRIPTOR_t gufunc_descriptors[] = {
     {
         "_interp",
         "(n),(p),(p),(),()->(n)",
-        "Compute inverse involute function element-wise.\n\n"
+        "One-dimensional linear interpolation on the last dimension, "
+        "broadcast on the rest.\n\n"
         "Parameters\n"
         "----------\n"
-        "theta : array-like\n"
-        "      Input array.\n"
-        "error : array-like\n"
-        "      Relative error in calculation.\n\n"   
+        "x : (..., n) array-like\n"
+        "  The x-coordinates of the interpolated values.\n"
+        "xp : (..., p) array-like\n"
+        "   The x-coordinates of the data points, must be increasing.\n"
+        "yp : (..., p) array-like\n"
+        "   The y-coordinates of the data points.\n"
+        "left : (...) array_like\n"
+        "     Value to return for `x < xp[0]`, default is `fp[..., 0]`.\n"
+        "right : (...) array_like\n"
+        "      Value to return for `x > xp[0]`, default is `fp[..., -1]`.\n\n"
         "Returns\n"
         "-------\n"
-        "out : ndarray\n"
-        "    The corresponding inverse involute values.\n",
+        "y : (..., n) ndarray\n"
+        "    The interpolated values, same shape as `x`.\n",
         6, 5, 1,
         interp_funcs,
         interp_types,
@@ -546,17 +553,20 @@ GUFUNC_DESCRIPTOR_t gufunc_descriptors[] = {
     {
         "_bincount_wt",
         "(m),(m)->(n)",
-        "Compute inverse involute function element-wise.\n\n"
+        "Weighted count of the occurrences of each value in array of "
+        "non-negative ints on the last dimension, broadcast on the rest.\n\n"
         "Parameters\n"
         "----------\n"
-        "theta : array-like\n"
-        "      Input array.\n"
-        "error : array-like\n"
-        "      Relative error in calculation.\n\n"   
+        "x : (..., m) array-like\n"
+        "  Input array.\n"
+        "weights : (..., m) array-like\n"
+        "   Weights, array broadcastable of the same shape as x.\n"
+        "out : (..., n) ndarray\n"
+        "    output array, must be of the right shape.\n\n"
         "Returns\n"
         "-------\n"
-        "out : ndarray\n"
-        "    The corresponding inverse involute values.\n",
+        "out : (..., n) ndarray\n"
+        "    output array, must be of the right shape.\n",
         135, 2, 1,
         bincount_wt_funcs,
         bincount_wt_types,
@@ -565,17 +575,18 @@ GUFUNC_DESCRIPTOR_t gufunc_descriptors[] = {
     {
         "_bincount",
         "(m)->(n)",
-        "Compute inverse involute function element-wise.\n\n"
+        "Count of the number of occurrences of each value in array of "
+        "non-negative ints on the last dimension, broadcast on the rest.\n\n"
         "Parameters\n"
         "----------\n"
-        "theta : array-like\n"
-        "      Input array.\n"
-        "error : array-like\n"
-        "      Relative error in calculation.\n\n"   
+        "x : (..., m) array-like\n"
+        "  Input array.\n"
+        "out : (..., n) ndarray\n"
+        "    output array, must be of the right shape.\n\n"
         "Returns\n"
         "-------\n"
-        "out : ndarray\n"
-        "    The corresponding inverse involute values.\n",
+        "out : (..., n) ndarray\n"
+        "    output array, must be of the right shape.\n",
         9, 1, 1,
         bincount_funcs,
         bincount_types,
@@ -584,17 +595,18 @@ GUFUNC_DESCRIPTOR_t gufunc_descriptors[] = {
     {
         "_minmax",
         "(m)->(),()",
-        "Compute inverse involute function element-wise.\n\n"
+        "Minimum and maximum of an array of ints on the last dimension, "
+        "broadcast on the rest.\n\n"
         "Parameters\n"
         "----------\n"
-        "theta : array-like\n"
-        "      Input array.\n"
-        "error : array-like\n"
-        "      Relative error in calculation.\n\n"   
+        "a : (..., m) array-like\n"
+        "      Input array.\n\n"
         "Returns\n"
         "-------\n"
-        "out : ndarray\n"
-        "    The corresponding inverse involute values.\n",
+        "min : (...) ndarray\n"
+        "    Minimum of `a`.\n"
+        "max : (...) ndarray\n"
+        "    Maximum of `a`.\n",
         9, 1, 2,
         minmax_funcs,
         minmax_types,
