@@ -1,0 +1,694 @@
+#define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
+
+#include "Python.h"
+#include "numpy/ndarraytypes.h"
+#include "numpy/ufuncobject.h"
+#include "numpy/npy_3kcompat.h"
+#include<stdlib.h>
+#include<stdio.h>
+#include <math.h>
+
+/* The C preprocessor requires these double indirection levels to allow
+ * stringification and concatenation of a macro value, i.e. MODULE_NAME
+ */
+#define EXPAND_AND_QUOTE(str) QUOTE(str)
+#define QUOTE(str) #str
+#define PASTE(a, b) a ## b
+#define JOIN(a, b) PASTE(a, b)
+
+#define MODULE_NAME _new_gu_kernels /* edit this line with the module name */
+#define VERSION 0.1
+
+#define MODULE_NAME_STR EXPAND_AND_QUOTE(MODULE_NAME)
+#define VERSION_STR EXPAND_AND_QUOTE(VERSION)
+#define APPEND_MODULE(name) JOIN(name, MODULE_NAME)
+#define PREPEND_MODULE(name) JOIN(MODULE_NAME, name)
+
+/*
+ *****************************************************************************
+ **                          AUXILIARY FUNCTIONS                            **
+ *****************************************************************************
+ */
+
+static npy_intp
+non_contiguous_binary_search(npy_double key, char *arr, npy_intp len,
+                             npy_intp str)
+{
+    npy_intp min_idx = 0,
+             delta,
+             max_idx = len;
+    char *min_ptr = arr,
+         *mid_ptr,
+         *max_ptr = arr + len * str;
+    
+    while (min_idx < max_idx) {
+        delta = (max_idx - min_idx) >> 1;
+        mid_ptr = min_ptr + delta * str;
+        if(key >= *(npy_double *)mid_ptr) {
+            min_idx += delta + 1;
+            min_ptr = mid_ptr + str;
+        }
+        else {
+            max_idx = min_idx + delta;
+            max_ptr = mid_ptr;
+        }
+    }
+    return min_idx - 1;
+}
+
+/*
+ *****************************************************************************
+ **                              GUFUNC LOOPS                               **
+ *****************************************************************************
+ */
+
+/**begin repeat
+ * #TYPE = BOOL,
+ *         BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *         LONG, ULONG, LONGLONG, ULONGLONG#
+ * #type = npy_bool,
+ *         npy_byte, npy_ubyte, npy_short, npy_ushort, npy_int, npy_uint,
+ *         npy_long, npy_ulong, npy_longlong, npy_ulonglong#
+ */ 
+ 
+static void
+@TYPE@_minmax_kernel(char **args,npy_intp *dimensions, npy_intp *steps,
+                     void *data)
+{
+    char *arr = args[0],
+         *min = args[1],
+         *max = args[2];
+    npy_intp loop_len = dimensions[0],
+             arr_len = dimensions[1];
+    npy_intp arr_loop_str = steps[0],
+             min_loop_str = steps[1],
+             max_loop_str = steps[2],
+             arr_str = steps[3];
+    
+    typedef @type@ arr_t;
+    
+    npy_intp n, j;
+    arr_t min_val, max_val, arr_val;
+    
+    if (arr_str == sizeof (arr_t)) {
+        arr_t *arr_ptr;
+        for (n = 0; n < loop_len; n++,
+                                  arr += arr_loop_str,
+                                  min += min_loop_str,
+                                  max += max_loop_str) {
+            for (arr_ptr = (arr_t *)arr,
+                 min_val = max_val = *arr_ptr,
+                 arr_ptr++,
+                 j = 1; j < arr_len; j++,
+                                     arr_ptr++) {
+                arr_val = *arr_ptr;
+                if (arr_val > max_val) {
+                    max_val = arr_val;
+                }
+                else if (arr_val < min_val) {
+                    min_val = arr_val;
+                }
+            }
+            *(arr_t *)min = min_val;
+            *(arr_t *)max = max_val;
+        }
+    }
+    else {
+        char *arr_ptr;
+        for (n = 0; n < loop_len; n++,
+                                  arr += arr_loop_str,
+                                  min += min_loop_str,
+                                  max += max_loop_str) {
+            for (min_val = max_val = *(arr_t *)arr,
+                arr_ptr = arr + arr_str,
+                j = 1; j < arr_len; j++,
+                                    arr_ptr += arr_str) {
+                arr_val = *(arr_t *)arr_ptr;
+                if (arr_val > max_val) {
+                    max_val = arr_val;
+                }
+                else if (arr_val < min_val) {
+                    min_val = arr_val;
+                }
+            }
+            *(arr_t *)min = min_val;
+            *(arr_t *)max = max_val;
+        }
+    }
+}
+
+/**end repeat**/
+
+/**begin repeat
+ * #TYPE = FLOAT, CFLOAT, DOUBLE, CDOUBLE, LONGDOUBLE, CLONGDOUBLE#
+ * #type = npy_float*2, npy_double*2, npy_longdouble*2#
+ * #iscomplex = 0, 1, 0, 1, 0, 1#
+ */
+
+static void
+@TYPE@_interp_kernel(char **args, npy_intp *dimensions, npy_intp *steps,
+                     void *data)
+{
+    char *x = args[0], /* interpolation values */
+         *xp = args[1], /* x coordinates of data points */
+         *fp = args[2], /* y coordinates of data points */
+         *left = args[3], /* value to return for x < xp[0] */
+         *right = args[4], /* value to return for x > xp[-1] */
+         *out = args[5]; /*interpolated values */
+    npy_intp loop_len = dimensions[0], /* main loop length */
+             x_len = dimensions[1], /* interpolation values length */
+             p_len = dimensions[2]; /* data points length */
+    npy_intp x_loop_str = steps[0], /* interpolation values loop stride */
+             xp_loop_str = steps[1], /* data points x coord loop stride */
+             fp_loop_str = steps[2], /* data points y coord loop stride */
+             left_loop_str = steps[3], /* left vlaue loop stride */
+             right_loop_str = steps[4], /* right value loop stride */
+             out_loop_str = steps[5], /* interpolated values loop stride */
+             x_str = steps[6], /* interpolation values stride */
+             xp_str = steps[7], /* data points x coord stride */
+             fp_str = steps[8], /* data points y coord stride */
+             out_str = steps[9]; /* interpolated values stride */
+    
+    typedef @type@ data_t;
+    
+    npy_intp n, j, /* loop, interpolation values iteration indices */
+             idx;
+    char *x_ptr, /* interpolation values pointer */
+         *out_ptr, /* interpolated values pointer */
+         *xp_ptr, *fp_ptr; /* data points pointers */
+    data_t first_x, last_x, /* x coords of first and last data point */
+           *last_f, /* y coords of last data point */
+           *left_val, *right_val, /* values of left and right */
+           x_val, x0, x1, slope, *f0, *f1, *out_data_ptr;
+           
+    /* Main gufunc loop */
+    for (n = 0; n < loop_len; n++,
+                              x += x_loop_str,
+                              xp += xp_loop_str,
+                              fp += fp_loop_str,
+                              left += left_loop_str,
+                              right += right_loop_str,
+                              out += out_loop_str) {
+        /* Interpolation values loop */
+        for (first_x = *(data_t *)xp,
+             last_x = *(data_t *)(xp + (p_len - 1) * xp_str),
+             last_f = (data_t *)(fp + (p_len - 1) * fp_str),
+             left_val = (data_t *)left,
+             right_val = (data_t *)right,
+             x_ptr = x,
+             out_ptr = out,
+             j = 0; j < x_len; j++,
+                               x_ptr += x_str,
+                               out_ptr += out_str) {
+            x_val = *(data_t *)x_ptr;
+            out_data_ptr = (data_t *)out_ptr;
+            if (x_val < first_x) {
+                *out_data_ptr = *left_val;
+                #if @iscomplex@
+                    out_data_ptr[1] = left_val[1];
+                #endif
+            }
+            else if (x_val == last_x) {
+                *out_data_ptr = *last_f;
+                #if @iscomplex@
+                    out_data_ptr[1] = last_f[1];
+                #endif
+            }
+            else if (x_val > last_x) {
+                *out_data_ptr = *right_val;
+                #if @iscomplex@
+                    out_data_ptr[1] = right_val[1];
+                #endif
+            }
+            else {
+                idx = non_contiguous_binary_search(x_val, xp, p_len, xp_str);
+                xp_ptr = xp + idx * xp_str;
+                fp_ptr = fp + idx * fp_str;
+                x0 = *(data_t *)xp_ptr;
+                x1 = *(data_t *)(xp_ptr + xp_str);
+                f0 = (data_t *)fp_ptr;
+                f1 = (data_t *)(fp_ptr + fp_str);
+                slope = (x_val - x0) / (x1 - x0);
+                *out_data_ptr = *f0 + (*f1 - *f0) * slope;
+                #if @iscomplex@
+                    out_data_ptr[1] = f0[1] + (f1[1] - f0[1]) * slope;
+                #endif
+            }
+        } /* End of interpolation values loop */
+                               
+    } /* End of main gufunc loop */
+}
+
+/**end repeat**/
+
+/**begin repeat
+ * #TYPE = BOOL,
+ *         BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *         LONGLONG, ULONGLONG#
+ * #type = npy_bool,
+ *         npy_byte, npy_ubyte, npy_short, npy_ushort, npy_int, npy_uint,
+ *         npy_longlong, npy_ulonglong#
+ */ 
+
+static void
+@TYPE@_bincount_kernel(char **args, npy_intp *dimensions, npy_intp *steps,
+                       void *data)
+{
+    char *x = args[0], /* array to count */
+         *out = args[1]; /* output array */
+    npy_intp loop_len = dimensions[0], /* main loop length */
+             x_len = dimensions[1], /* x array length */
+             out_len = dimensions[2]; /* out array length */
+    npy_intp x_loop_str = steps[0], /* x array loop stride */
+             out_loop_str = steps[1], /* out array loop stride */
+             x_str = steps[2], /* x array stride */
+             out_str = steps[3]; /* out array stride */
+    
+    typedef @type@ x_t;
+
+    char *x_ptr;
+    npy_intp n, j;
+
+    for (n = 0; n < loop_len; n++,
+                              x += x_loop_str,
+                              out += out_loop_str) {
+        for (x_ptr = x,
+             j = 0; j < x_len; j++,
+                               x_ptr += x_str) {
+            (*(npy_intp *)(out + *(x_t *)x_ptr * out_str))++;
+        }
+    }
+} /* End of bincount_kernel function */
+
+/**begin repeat1
+ * #WT_TYPE = BOOL,
+ *            BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *            LONGLONG, ULONGLONG,
+ *            FLOAT, CFLOAT, DOUBLE, CDOUBLE,
+ *            LONGDOUBLE, CLONGDOUBLE#
+ * #wt_type = npy_bool,
+ *            npy_byte, npy_ubyte, npy_short, npy_ushort, npy_int, npy_uint,
+ *            npy_longlong, npy_ulonglong,
+ *            npy_float*2, npy_double*2,
+ *            npy_longdouble*2#
+ * #out_type = npy_intp,
+ *             npy_intp, npy_uintp, npy_intp, npy_uintp, npy_intp, npy_uintp,
+ *             npy_longlong, npy_ulonglong,
+ *             npy_float*2, npy_double*2, npy_longdouble*2#
+ * #iscomplex = 0*9, 0, 1, 0, 1, 0, 1#
+ */
+
+static void
+@TYPE@_@WT_TYPE@_bincount_kernel(char **args, npy_intp *dimensions,
+                                 npy_intp *steps, void *data)
+{
+    char *x = args[0], /* array to count */
+         *weights = args[1], /* weights array */
+         *out = args[2]; /* output array */
+    npy_intp loop_len = dimensions[0], /* main loop length */
+             x_len = dimensions[1], /* x array length */
+             out_len = dimensions[2]; /* out array length */
+    npy_intp x_loop_str = steps[0], /* x array loop stride */
+             weights_loop_str = steps[1], /* weights array loop stride */
+             out_loop_str = steps[2], /* out array loop stride */
+             x_str = steps[3], /* x array stride */
+             weights_str = steps[4], /* weights array stride */
+             out_str = steps[5]; /* out array stride */
+    
+    typedef @type@ x_t;
+    typedef @wt_type@ w_t;
+    typedef @out_type@ o_t;
+
+    char *x_ptr, *weights_ptr;
+    npy_intp n, j;
+    o_t *out_ptr;
+    
+    for (n = 0; n < loop_len; n++,
+                              x += x_loop_str,
+                              weights += weights_loop_str,
+                              out += out_loop_str) {
+        for (x_ptr = x,
+             weights_ptr = weights,
+             j = 0; j < x_len; j++,
+                               x_ptr += x_str,
+                               weights_ptr += weights_str) {
+            out_ptr = (o_t *)(out + *(x_t *)x_ptr * out_str);
+            *out_ptr += (o_t)(*(w_t *)weights_ptr);
+            #if @iscomplex@
+                out_ptr[1] += (o_t)(((w_t *)weights_ptr)[1]);
+            #endif
+        }
+    }
+} /* End of bincount_kernel function */
+
+/**end repeat1**/
+
+/**end repeat**/
+ 
+ /*
+ *****************************************************************************
+ **                           GUFUNC REGISTRATION                           **
+ *****************************************************************************
+ */
+ 
+static void *void_data[] = {
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL, 
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+    (void *) NULL, (void *) NULL, (void *) NULL, (void *) NULL,
+};
+
+static char interp_types[] = {
+    NPY_FLOAT, NPY_FLOAT, NPY_FLOAT, NPY_FLOAT,
+    NPY_FLOAT, NPY_FLOAT, /* FLOAT_interp_kernel */
+    NPY_FLOAT, NPY_FLOAT, NPY_CFLOAT, NPY_CFLOAT,
+    NPY_CFLOAT, NPY_CFLOAT, /* CFLOAT_interp_kernel */
+    NPY_DOUBLE, NPY_DOUBLE, NPY_DOUBLE, NPY_DOUBLE,
+    NPY_DOUBLE, NPY_DOUBLE, /* DOUBLE_interp_kernel */
+    NPY_DOUBLE, NPY_DOUBLE, NPY_CDOUBLE, NPY_CDOUBLE,
+    NPY_CDOUBLE, NPY_CDOUBLE, /* CDOUBLE_interp_kernel */
+    NPY_LONGDOUBLE, NPY_LONGDOUBLE, NPY_LONGDOUBLE, NPY_LONGDOUBLE,
+    NPY_LONGDOUBLE, NPY_LONGDOUBLE,  /* LONGDOUBLE_interp_kernel */
+    NPY_LONGDOUBLE, NPY_LONGDOUBLE, NPY_CLONGDOUBLE, NPY_CLONGDOUBLE,
+    NPY_CLONGDOUBLE, NPY_CLONGDOUBLE,  /* CLONGDOUBLE_interp_kernel */
+
+};
+
+PyUFuncGenericFunction interp_funcs[] = {
+    &FLOAT_interp_kernel, &CFLOAT_interp_kernel,
+    &DOUBLE_interp_kernel, &CDOUBLE_interp_kernel,
+    &LONGDOUBLE_interp_kernel, &CLONGDOUBLE_interp_kernel,
+};
+
+static char bincount_wt_types[] = {
+/**begin repeat
+ * #TYPE = BOOL,
+ *         BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *         LONGLONG, ULONGLONG#
+ */
+/**begin repeat1
+ * #WT_TYPE = BOOL,
+ *            BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *            LONGLONG, ULONGLONG,
+ *            FLOAT, CFLOAT, DOUBLE, CDOUBLE,
+ *            LONGDOUBLE, CLONGDOUBLE#
+ * #OUT_TYPE = INTP,
+ *             INTP, UINTP, INTP, UINTP, INTP, UINTP,
+ *             LONGLONG, ULONGLONG,
+ *             FLOAT, CFLOAT, DOUBLE, CDOUBLE,
+ *             LONGDOUBLE, CLONGDOUBLE#
+ */
+    NPY_@TYPE@, NPY_@WT_TYPE@, NPY_@OUT_TYPE@,
+/**end repeat1**/
+/**end repeat**/ 
+};
+
+PyUFuncGenericFunction bincount_wt_funcs[] = {
+/**begin repeat
+ * #TYPE = BOOL,
+ *         BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *         LONGLONG, ULONGLONG#
+ */
+/**begin repeat1
+ * #WT_TYPE = BOOL,
+ *            BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *            LONGLONG, ULONGLONG,
+ *            FLOAT, CFLOAT, DOUBLE, CDOUBLE,
+ *            LONGDOUBLE, CLONGDOUBLE#
+ */
+    &@TYPE@_@WT_TYPE@_bincount_kernel,
+/**end repeat1**/
+/**end repeat**/ 
+};
+
+static char bincount_types[] = {
+/**begin repeat
+ * #TYPE = BOOL,
+ *         BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *         LONGLONG, ULONGLONG#
+ */
+    NPY_@TYPE@, NPY_INTP,
+/**end repeat**/
+};
+
+PyUFuncGenericFunction bincount_funcs[] = {
+/**begin repeat
+ * #TYPE = BOOL,
+ *         BYTE, UBYTE, SHORT, USHORT, INT, UINT,
+ *         LONGLONG, ULONGLONG#
+ */
+    &@TYPE@_bincount_kernel,
+/**end repeat**/
+};
+
+static char minmax_types[] = {
+    NPY_BOOL, NPY_BOOL, NPY_BOOL, /* BOOL_minmax_kernel */
+    NPY_BYTE, NPY_BYTE, NPY_BYTE, /* BYTE_minmax_kernel */
+    NPY_UBYTE, NPY_UBYTE, NPY_UBYTE, /* UBYTE_minmax_kernel */
+    NPY_SHORT, NPY_SHORT, NPY_SHORT, /* SHORT_minmax_kernel */
+    NPY_USHORT, NPY_USHORT, NPY_USHORT, /* USHORT_minmax_kernel */
+    NPY_INT, NPY_INT, NPY_INT, /* INT_minmax_kernel */
+    NPY_UINT, NPY_UINT, NPY_UINT, /* UINT_minmax_kernel */
+    NPY_LONGLONG, NPY_LONGLONG, NPY_LONGLONG, /* LONGLONG_minmax_kernel */
+    NPY_ULONGLONG, NPY_ULONGLONG, NPY_ULONGLONG, /* ULONGLONG_minmax_kernel */
+};
+
+PyUFuncGenericFunction minmax_funcs[] = {
+    &BOOL_minmax_kernel,
+    &BYTE_minmax_kernel,
+    &UBYTE_minmax_kernel,
+    &SHORT_minmax_kernel,
+    &USHORT_minmax_kernel,
+    &INT_minmax_kernel,
+    &UINT_minmax_kernel,
+    &LONGLONG_minmax_kernel,
+    &ULONGLONG_minmax_kernel,
+};
+
+ typedef struct gufunc_descriptor_struct {
+    char *name;
+    char *signature;
+    char *doc;
+    int ntypes;
+    int nin;
+    int nout;
+    PyUFuncGenericFunction *funcs;
+    char *types;
+    void *data;
+} GUFUNC_DESCRIPTOR_t;
+
+GUFUNC_DESCRIPTOR_t gufunc_descriptors[] = {
+    {
+        "_interp",
+        "(n),(p),(p),(),()->(n)",
+        "Compute inverse involute function element-wise.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "theta : array-like\n"
+        "      Input array.\n"
+        "error : array-like\n"
+        "      Relative error in calculation.\n\n"   
+        "Returns\n"
+        "-------\n"
+        "out : ndarray\n"
+        "    The corresponding inverse involute values.\n",
+        6, 5, 1,
+        interp_funcs,
+        interp_types,
+        void_data
+    },
+    {
+        "_bincount_wt",
+        "(m),(m)->(n)",
+        "Compute inverse involute function element-wise.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "theta : array-like\n"
+        "      Input array.\n"
+        "error : array-like\n"
+        "      Relative error in calculation.\n\n"   
+        "Returns\n"
+        "-------\n"
+        "out : ndarray\n"
+        "    The corresponding inverse involute values.\n",
+        135, 2, 1,
+        bincount_wt_funcs,
+        bincount_wt_types,
+        void_data
+    },
+    {
+        "_bincount",
+        "(m)->(n)",
+        "Compute inverse involute function element-wise.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "theta : array-like\n"
+        "      Input array.\n"
+        "error : array-like\n"
+        "      Relative error in calculation.\n\n"   
+        "Returns\n"
+        "-------\n"
+        "out : ndarray\n"
+        "    The corresponding inverse involute values.\n",
+        9, 1, 1,
+        bincount_funcs,
+        bincount_types,
+        void_data
+    },
+    {
+        "_minmax",
+        "(m)->(),()",
+        "Compute inverse involute function element-wise.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "theta : array-like\n"
+        "      Input array.\n"
+        "error : array-like\n"
+        "      Relative error in calculation.\n\n"   
+        "Returns\n"
+        "-------\n"
+        "out : ndarray\n"
+        "    The corresponding inverse involute values.\n",
+        9, 1, 2,
+        minmax_funcs,
+        minmax_types,
+        void_data
+    },
+}; /* End of gufunc_descriptors declaration */
+
+static void
+addUfuncs(PyObject *dictionary) {
+    PyObject *f;
+    int i;
+    const int gufunc_count = sizeof(gufunc_descriptors) /
+                             sizeof(gufunc_descriptors[0]);
+    for (i=0; i < gufunc_count; i++) {
+        GUFUNC_DESCRIPTOR_t* d = &gufunc_descriptors[i];
+        f = PyUFunc_FromFuncAndDataAndSignature(d->funcs,
+                                                d->data,
+                                                d->types,
+                                                d->ntypes,
+                                                d->nin,
+                                                d->nout,
+                                                PyUFunc_None,
+                                                d->name,
+                                                d->doc,
+                                                0,
+                                                d->signature);
+        PyDict_SetItemString(dictionary, d->name, f);
+        Py_DECREF(f);
+    }
+}
+
+/*
+ *****************************************************************************
+ **                          MODULE INITIALIZATION                          **
+ *****************************************************************************
+ */
+ 
+static PyMethodDef module_methods[] = {
+    {NULL, NULL, 0, NULL}        /* Sentinel */
+};
+
+#if defined(NPY_PY3K)
+static struct PyModuleDef moduledef = {
+        PyModuleDef_HEAD_INIT,
+        NUMPYPE_MODULE_NAME,
+        NULL,
+        -1,
+        module_methods,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+};
+#endif
+
+#if defined(NPY_PY3K)
+#define RETVAL m
+PyObject*
+APPEND_MODULE(PyInit_) (void)/**PyInit__numpype(void)*/
+#else
+#define RETVAL
+PyMODINIT_FUNC
+APPEND_MODULE(init) (void)
+#endif
+{
+    PyObject *m;
+    PyObject *d;
+    PyObject *version;
+
+#if defined(NPY_PY3K)
+    m = PyModule_Create(&moduledef);
+#else
+    m = Py_InitModule(MODULE_NAME_STR, module_methods);
+#endif
+    if (m == NULL)
+        return RETVAL;
+
+    import_array();
+    import_ufunc();
+
+    d = PyModule_GetDict(m);
+
+    version = PyString_FromString(VERSION_STR);
+    PyDict_SetItemString(d, "__version__", version);
+    Py_DECREF(version);
+
+    /* Load the ufunc operators into the module's namespace */
+    addUfuncs(d);
+
+    if (PyErr_Occurred()) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "cannot load " MODULE_NAME_STR " module.");
+    }
+
+    return RETVAL;
+}
+ 
