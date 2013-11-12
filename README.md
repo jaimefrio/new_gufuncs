@@ -1,4 +1,4 @@
 new_gufuncs
 ===========
 
-Generalized Universal Function versions of several numpy.lib functions
+Generalized Universal FUNCtion versions of several numpy.lib functions.

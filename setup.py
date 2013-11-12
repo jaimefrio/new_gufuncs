@@ -1,4 +1,4 @@
-"""Several examples of C coded Generalized Universal FUNCtions.
+"""Generalized Universal FUNCtion versions of several numpy.lib functions.
 """
 from __future__ import division, absolute_import, print_function
 
